@@ -195,18 +195,21 @@
 			                renderTimeline();
 			                renderCortesList();
 			            }
-			
+			            let dragging = null;
 			            function selectAndPlay(index) {
 			                selected = index;
 			                const corte = cortes[index];
-			                mediaElement.currentTime = corte.inicio;
+			                if (dragging && (dragging.type == 'fim'))
+			                    mediaElement.currentTime = corte.fim - 1;
+			                else
+			                    mediaElement.currentTime = corte.inicio ;
 			                mediaElement.play();
 			                playingSegment = true;
 			                renderTimeline();
 			                renderCortesList();
 			            }
 			
-			            let dragging = null;
+			
 			
 			            function startDragEdge(e, index, type) {
 			                e.preventDefault();
@@ -235,6 +238,7 @@
 			                if (dragging.mode === 'edge') {
 			                    corte[dragging.type] = time;
 			                    if (corte.fim < corte.inicio) [corte.inicio, corte.fim] = [corte.fim, corte.inicio];
+			                    //                     if (dragging.type == 'inicio')
 			                    selectAndPlay(dragging.index);
 			                }
 			
