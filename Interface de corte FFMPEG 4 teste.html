@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Editor com Linha do Tempo</title>
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; padding: 20px; }
+    video, audio { max-width: 100%; margin-top: 10px; }
+    .controls { margin-top: 10px; }
+    .timeline-container {
+      position: relative;
+      background: #333;
+      height: 40px;
+      margin-top: 20px;
+      user-select: none;
+    }
+    .corte-block {
+      position: absolute;
+      height: 100%;
+      display: flex;
+      justify-content: space-between;
+      opacity: 0.6;
+      border-radius: 3px;
+      border: 2px solid transparent;
+    }
+    .corte-block.selected {
+      opacity: 1;
+      border-color: #fff;
+    }
+    .handle {
+      width: 6px;
+      background: #fff;
+      cursor: col-resize;
+    }
+    .cortes-list {
+      margin-top: 20px;
+    }
+    .corte-item {
+      background: #222;
+      padding: 10px;
+      margin-bottom: 5px;
+      border-radius: 4px;
+    }
+    .corte-item input {
+      background: #111;
+      border: 1px solid #444;
+      color: #eee;
+      width: 70px;
+      margin-left: 5px;
+    }
+  </style>
+	</head>
+	<body>
+			<h1>Editor de Cortes</h1>
+			  <input type="file" id="fileInput" accept="video/*,audio/*">
+			<!--     <input type="file" id="fileInput" accept="video/*" /> -->
+			  <div id="mediaContainer"></div>
+			  <div class="controls">
+			    <button onclick="addCorte()">Adicionar Corte</button> 
+			  </div>
+			  <div class="timeline-container" id="timeline"></div>
+			  <div class="cortes-list" id="cortesList"></div>
+			<button onclick="exportarFFmpeg()">Exportar FFmpeg</button>
+			    <button onclick="baixarTrecho(index)">Baixar Trecho</button>
+			    <button onclick="baixarTodosCortes()">Baixar Todos os Cortes</button>
+			  <script>
+			    const fileInput = document.getElementById('fileInput');
+			    const mediaContainer = document.getElementById('mediaContainer');
+			    const timeline = document.getElementById('timeline');
+			    const cortesList = document.getElementById('cortesList');
+			    let mediaElement = null;
+			    const cortes = [];
+			    let selected = null;
+			    let playingSegment = false; 
+			
+			    const cores = () => '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
+			
+			    fileInput.addEventListener('change', e => {
+			      const file = e.target.files[0];
+			      if (!file) return;
+			      mediaContainer.innerHTML = '';
+			      const url = URL.createObjectURL(file);
+			      if (file.type.startsWith('video')) {
+			        mediaElement = document.createElement('video');
+			      } else {
+			        mediaElement = document.createElement('audio');
+			      }
+			      mediaElement.src = url;
+			      mediaElement.controls = true;
+			      mediaElement.onloadedmetadata = () => {
+			        renderTimeline();
+			        renderCortesList();
+			      };
+			      mediaElement.ontimeupdate = () => {
+			        if (playingSegment && selected != null) {
+			          const corte = cortes[selected];
+			          if (mediaElement.currentTime >= corte.fim) {
+			            mediaElement.pause();
+			            playingSegment = false;
+			          }
+			        }
+			      };
+			      mediaContainer.appendChild(mediaElement);
+			    });
+			
+			    function addCorte() {
+			      if (!mediaElement) return;
+			      const dur = mediaElement.duration || 100;
+			      const lastEnd = cortes.length ? cortes[cortes.length - 1].fim : 0;
+			      const start = Math.min(lastEnd, dur - 0.5);
+			      const end = Math.min(dur, start + 2);
+			      const cor = cores();
+			      cortes.push({ inicio: start, fim: end, cor });
+			      renderTimeline();
+			      renderCortesList();
+			    }
+			
+			    function renderTimeline() {
+			      if (!mediaElement) return;
+			      timeline.innerHTML = '';
+			      const dur = mediaElement.duration || 100;
+			      cortes.forEach((corte, index) => {
+			        const div = document.createElement('div');
+			        const pctInicio = (corte.inicio / dur) * 100;
+			        const pctFim = (corte.fim / dur) * 100;
+			        const largura = pctFim - pctInicio;
+			
+			        div.className = 'corte-block';
+			        if (selected === index) div.classList.add('selected');
+			        div.style.left = `${pctInicio}%`;
+			        div.style.width = `${largura}%`;
+			        div.style.backgroundColor = corte.cor;
+			        div.dataset.index = index;
+			
+			        div.onmousedown = e => startDragMove(e, index);
+			
+			        const handleL = document.createElement('div');
+			        handleL.className = 'handle';
+			        handleL.onmousedown = e => startDragEdge(e, index, 'inicio');
+			
+			        const handleR = document.createElement('div');
+			        handleR.className = 'handle';
+			        handleR.onmousedown = e => startDragEdge(e, index, 'fim');
+			
+			        div.appendChild(handleL);
+			        div.appendChild(handleR);
+			
+			        div.onclick = e => {
+			          e.stopPropagation();
+			          selectAndPlay(index);
+			        };
+			
+			        timeline.appendChild(div);
+			      });
+			
+			      timeline.onclick = () => {
+			        selected = null;
+			        renderTimeline();
+			        renderCortesList();
+			      };
+			    }
+			
+			function renderCortesList() {
+			  cortesList.innerHTML = '';
+			  cortes.forEach((c, i) => {
+			    const item = document.createElement('div');
+			    item.className = 'corte-item';
+			    if (selected === i) item.style.border = '1px solid white';
+			    item.innerHTML = `
+			      Corte ${i + 1}: 
+			      Início <input type="number" step="0.1" value="${c.inicio.toFixed(2)}" onchange="updateCampo(${i}, 'inicio', this.value)">
+			      Fim <input type="number" step="0.1" value="${c.fim.toFixed(2)}" onchange="updateCampo(${i}, 'fim', this.value)">
+			      <button onclick="selectAndPlay(${i})">Play</button>
+			      <button onclick="removerCorte(${i})">Excluir</button>
+			      <button onclick="baixarTodosCortes(${i})">baixar</button>
+			    `;
+			    cortesList.appendChild(item);
+			  });
+			}
+			function removerCorte(index) {
+			  cortes.splice(index, 1);
+			  if (selected === index) selected = null;
+			  else if (selected > index) selected -= 1;
+			  renderTimeline();
+			  renderCortesList();
+			}
+			    function updateCampo(index, campo, valor) {
+			      cortes[index][campo] = parseFloat(valor);
+			      if (cortes[index].fim < cortes[index].inicio) {
+			        [cortes[index].inicio, cortes[index].fim] = [cortes[index].fim, cortes[index].inicio];
+			      }
+			      renderTimeline();
+			      renderCortesList();
+			    }
+			
+			    function selectAndPlay(index) {
+			      selected = index;
+			      const corte = cortes[index];
+			      mediaElement.currentTime = corte.inicio;
+			      mediaElement.play();
+			      playingSegment = true;
+			      renderTimeline();
+			      renderCortesList();
+			    }
+			
+			    let dragging = null;
+			
+			    function startDragEdge(e, index, type) {
+			      e.preventDefault();
+			      e.stopPropagation();
+			      dragging = { index, type, mode: 'edge' };
+			      document.addEventListener('mousemove', onDrag);
+			      document.addEventListener('mouseup', stopDrag);
+			    }
+			
+			    function startDragMove(e, index) {
+			      if (e.target.classList.contains('handle')) return;
+			      e.preventDefault();
+			      dragging = { index, mode: 'move', startX: e.clientX };
+			      document.addEventListener('mousemove', onDrag);
+			      document.addEventListener('mouseup', stopDrag);
+			    }
+			
+			    function onDrag(e) {
+			      if (!dragging || !mediaElement) return;
+			      const dur = mediaElement.duration || 100;
+			      const rect = timeline.getBoundingClientRect();
+			      const pos = (e.clientX - rect.left) / rect.width;
+			      const time = Math.min(Math.max(0, pos * dur), dur);
+			      const corte = cortes[dragging.index];
+			
+			      if (dragging.mode === 'edge') {
+			        corte[dragging.type] = time;
+			        if (corte.fim < corte.inicio) [corte.inicio, corte.fim] = [corte.fim, corte.inicio];
+			        selectAndPlay(dragging.index);
+			      }
+			
+			      if (dragging.mode === 'move') {
+			        const pctMove = (e.clientX - dragging.startX) / rect.width;
+			        const delta = pctMove * dur;
+			        const tamanho = corte.fim - corte.inicio;
+			        let novoInicio = corte.inicio + delta;
+			        let novoFim = corte.fim + delta;
+			        if (novoInicio < 0) {
+			          novoFim -= novoInicio;
+			          novoInicio = 0;
+			        }
+			        if (novoFim > dur) {
+			          novoInicio -= (novoFim - dur);
+			          novoFim = dur;
+			        }
+			        corte.inicio = Math.max(0, novoInicio);
+			        corte.fim = Math.min(dur, novoFim);
+			        dragging.startX = e.clientX;
+			        selectAndPlay(dragging.index);
+			      }
+			
+			      renderTimeline();
+			      renderCortesList();
+			    }
+			 
+			    function stopDrag() {
+			      dragging = null;
+			      document.removeEventListener('mousemove', onDrag);
+			      document.removeEventListener('mouseup', stopDrag);
+			    }
+			  </script>
+	<script>
+				function exportarFFmpeg() {
+		    if (!fileInput.files.length) return;
+		    const filename = fileInput.files[0].name;
+		    const ext = filename.substring(filename.lastIndexOf('.'));
+		    let base = filename.substring(0, filename.lastIndexOf('.'));
+		    let comandos = cortes.map((c, i) => 
+		                              `ffmpeg -i "${filename}" -ss ${c.inicio.toFixed(2)} -to ${c.fim.toFixed(2)} -c copy "${base}_corte${i+1}${ext}"`
+		                             ).join('\n');
+		
+		    const blob = new Blob([comandos], { type: 'text/plain' });
+		    const a = document.createElement('a');
+		    a.href = URL.createObjectURL(blob);
+		    a.download = 'comandos_ffmpeg.sh';
+		    a.click();
+		}
+		
+		
+		const { createFFmpeg, fetchFile } = FFmpeg;
+		const ffmpeg = createFFmpeg({ log: true });
+		
+		async function baixarTodosCortes(numero_corte) {
+		    if (!ffmpeg.isLoaded()) await ffmpeg.load();
+		    const fileInput = document.getElementById('fileInput');
+		    if (!fileInput.files.length) return;
+		    const file = fileInput.files[0];
+		    const data = await fetchFile(file); // só aqui
+		    ffmpeg.FS('writeFile', file.name, data);
+		
+		
+		    if (numero_corte !== undefined) {
+		        await corta_corte(ffmpeg, file, numero_corte);
+		    } else {
+		        for (let i = 0; i < cortes.length; i++) {
+		            await corta_corte(ffmpeg, file, i);
+		        }
+		    } 
+		
+		    ffmpeg.FS('unlink', file.name);
+		}
+		
+		async function corta_corte(ffmpeg, file, numero) {
+		    const corte = cortes[numero];
+		    const nomeBase = file.name.replace(/\.[^/.]+$/, '');
+		    const nomeCorte = `${nomeBase}_corte${numero + 1}.mp4`;
+		
+		    await ffmpeg.run(
+		        '-i', file.name,
+		        '-ss', corte.inicio.toString(),
+		        '-t', (corte.fim - corte.inicio).toString(),
+		        '-c', 'copy',
+		        '-avoid_negative_ts', '1',
+		        nomeCorte
+		    ); 
+		
+		    const data = ffmpeg.FS('readFile', nomeCorte);
+		    const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
+		    const a = document.createElement('a');
+		    a.href = url;
+		    a.download = nomeCorte;
+		    a.click();
+		    ffmpeg.FS('unlink', nomeCorte);
+		}
+		
+	</script>
+	</body>
+</html>
